@@ -57,18 +57,41 @@ class GraphData(Data):
 
 # dataset loader which loads data into memory
 class ArgoverseInMem(InMemoryDataset):
-    def __init__(self, root, transform=None, pre_transform=None):
+    def __init__(self, root, transform=None, pre_transform=None, save_in_single_file=False, sample_size=1000):
+        self.save_in_single_file = save_in_single_file
+        self.sample_size = sample_size
         super(ArgoverseInMem, self).__init__(root, transform, pre_transform)
-        self.data, self.slices = torch.load(self.processed_paths[0])
+
+        if self.save_in_single_file:
+            self.data, self.slices = torch.load(self.processed_paths[0])
         gc.collect()
+
+        
 
     @property
     def raw_file_names(self):
-        return [file for file in os.listdir(self.raw_dir) if "features" in file and file.endswith(".pkl")]
+        files_list = os.listdir(self.raw_dir)
+        if self.sample_size > 0:
+            files_list = files_list[:self.sample_size]
+        return [file for file in files_list if "features" in file and file.endswith(".pkl")]
 
     @property
     def processed_file_names(self):
-        return ['data.pt']
+        if self.save_in_single_file:
+            return ['data.pt']
+        else:
+            file_names = []
+            for raw_file_name in self.raw_file_names:
+                file_id = re.findall(r"\d+", raw_file_name)[0]
+                file_name = 'data_{}.pt'.format(file_id)
+                file_names.append(file_name)
+            return file_names
+
+    def len(self):
+        if self.save_in_single_file:
+            return super(ArgoverseInMem, self).len()
+        else:
+            return len(self.processed_file_names)
 
     def download(self):
         pass
@@ -99,6 +122,13 @@ class ArgoverseInMem(InMemoryDataset):
         # pad vectors to the largest polyline id and extend cluster, save the Data to disk
         data_list = []
         for ind, raw_path in enumerate(tqdm(self.raw_paths, desc="Transforming the data to GraphData...")):
+            
+            file_name = os.path.split(raw_path)[1]
+            file_id = re.findall(r"\d+", file_name)[0]
+            output_name = os.path.join(self.processed_dir, 'data_{}.pt'.format(file_id))
+            # if not self.save_in_single_file and os.path.exists(output_name):
+            #     continue
+
             raw_data = pd.read_pickle(raw_path)
 
             # input data
@@ -128,11 +158,19 @@ class ArgoverseInMem(InMemoryDataset):
             )
             data_list.append(graph_input)
 
-        data, slices = self.collate(data_list)
-        torch.save((data, slices), self.processed_paths[0])
+            # save the data into a single file
+            if not self.save_in_single_file:
+                torch.save(graph_input, output_name)
+
+        if self.save_in_single_file:
+            data, slices = self.collate(data_list)
+            torch.save((data, slices), self.processed_paths[0])
 
     def get(self, idx):
-        data = super(ArgoverseInMem, self).get(idx).clone()
+        if self.save_in_single_file:
+            data = super(ArgoverseInMem, self).get(idx).clone()
+        else:
+            data = torch.load(os.path.join(self.processed_dir, self.processed_file_names[idx]))
 
         feature_len = data.x.shape[1]
         index_to_pad = data.time_step_len[0].item()
@@ -384,15 +422,17 @@ class ArgoverseInDisk(Dataset):
 if __name__ == "__main__":
 
     # for folder in os.listdir("./data/interm_data"):
-    INTERMEDIATE_DATA_DIR = "../../dataset/interm_data"
+    INTERMEDIATE_DATA_DIR = "dataset/interm_data"
+    # INTERMEDIATE_DATA_DIR = "../../dataset/interm_tnt_n_s_0804"
+    # INTERMEDIATE_DATA_DIR = "/media/Data/autonomous_driving/Argoverse/intermediate"
 
     for folder in ["train", "val", "test"]:
     # for folder in ["test"]:
         dataset_input_path = os.path.join(INTERMEDIATE_DATA_DIR, f"{folder}_intermediate")
 
         # dataset = Argoverse(dataset_input_path)
-        dataset = ArgoverseInMem(dataset_input_path).shuffle()
-        batch_iter = DataLoader(dataset, batch_size=16, num_workers=16, shuffle=True, pin_memory=False)
+        dataset = ArgoverseInMem(dataset_input_path, sample_size=1000).shuffle()
+        batch_iter = DataLoader(dataset, batch_size=1, num_workers=1, shuffle=True, pin_memory=True)
         for k in range(1):
             for i, data in enumerate(tqdm(batch_iter, total=len(batch_iter), bar_format="{l_bar}{r_bar}")):
                 pass
